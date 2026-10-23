@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CPU Scheduling Simulator</title>
+<style>
+:root{--bg:#fff;--fg:#1c1c1c;--mut:#666;--bd:#c8c8c8;--card:#f5f5f2;--err:#b00020;--ok:#1b7a3a}
+@media (prefers-color-scheme:dark){:root{--bg:#1b1b1d;--fg:#eee;--mut:#aaa;--bd:#4a4a4e;--card:#262629;--err:#ff7a8a;--ok:#5fd68a}}
+body{font:15px/1.45 system-ui,sans-serif;background:var(--bg);color:var(--fg);max-width:980px;margin:0 auto;padding:16px}
+h1{font-size:1.4rem;margin:0 0 4px}h2{font-size:1.1rem;margin:22px 0 8px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:12px;margin-bottom:12px}
+table{border-collapse:collapse;width:100%}th,td{border:1px solid var(--bd);padding:4px 8px;text-align:center}
+input,select,button{font:inherit;padding:4px 6px;border:1px solid var(--bd);border-radius:5px;background:var(--bg);color:var(--fg)}
+td input{width:90%;text-align:center;box-sizing:border-box}button{cursor:pointer}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:10px}
+#err{color:var(--err);border:1px solid var(--err);border-radius:8px;padding:8px 12px;display:none}
+#err ul{margin:4px 0 0 18px;padding:0}
+.scroll{overflow-x:auto;padding:4px 16px 34px}
+.g{display:flex;width:max-content}
+.blk{position:relative;height:46px;display:flex;align-items:center;justify-content:center;color:#111;border:2px solid #222;border-left-width:0;box-sizing:border-box}
+.blk:first-child{border-left-width:2px}
+.blk.idle{background:repeating-linear-gradient(45deg,#ddd,#ddd 5px,#bbb 5px,#bbb 10px);font-size:12px}
+.t{position:absolute;bottom:-22px;font-size:12px;font-style:normal;color:var(--fg);transform:translateX(-50%)}
+.ok{color:var(--ok)}.bad{color:var(--err)}small,.mut{color:var(--mut)}
+</style></head><body>
+<h1>CPU Scheduling Simulator</h1>
+<small>One CPU, one burst per process, no I/O, zero-cost context switches. An interval [2,5) means 3 units of CPU time.</small>
+
+<div class="card">
+ <table><thead><tr><th>Process ID</th><th>Arrival time</th><th>CPU burst</th><th></th></tr></thead><tbody id="tb"></tbody></table>
+ <div class="row">
+  <button id="add">+ Add process</button>
+  <label>Example: <select id="ex"><option value="A">Workload A</option><option value="B">Workload B</option><option value="C">Test C (idle time)</option><option value="D">Test D (simultaneous arrivals + ties)</option><option value="E">Test E (SRTF preemption)</option></select></label>
+  <button id="load">Load example</button>
+ </div>
+ <div class="row">
+  <label>Algorithm: <select id="algo"><option value="FCFS">FCFS</option><option value="SJF">SJF (non-preemptive)</option><option value="SRTF">SRTF (preemptive)</option><option value="RR">Round Robin</option></select></label>
+  <label id="ql">Quantum: <input id="q" value="2" size="3"></label>
+  <button id="run"><b>Run simulation</b></button>
+ </div>
+</div>
+
+<div id="err"></div>
+<div id="out" style="display:none">
+ <h2>Gantt chart <small id="gt"></small></h2><div class="card scroll"><div id="gantt" class="g"></div></div>
+ <div id="slices" class="mut"></div>
+ <h2>Results</h2><div class="card"><table id="res"></table><p id="avg"></p></div>
+ <h2>Property checks</h2><div class="card" id="chk"></div>
+</div>
+
+<script>
+//ENGINE-START
+const ALGOS={FCFS:'First-Come, First-Served',SJF:'Shortest Job First (non-preemptive)',SRTF:'Shortest Remaining Time First (preemptive)',RR:'Round Robin'};
+function validate(rows,algo,q){
+  const errs=[],procs=[],seen=new Set(),isInt=s=>/^\d+$/.test(String(s).trim());
+  if(!rows.length)errs.push('Add at least one process.');
+  rows.forEach((r,i)=>{
+    const id=String(r.id).trim(),tag='Row '+(i+1)+(id?' ('+id+')':'');
+    if(!id)errs.push(tag+': process ID is empty.');
+    else if(seen.has(id))errs.push(tag+': duplicate process ID "'+id+'"; IDs must be unique.');
+    seen.add(id);
+    if(!isInt(r.at))errs.push(tag+': arrival time must be a nonnegative integer (got "'+r.at+'").');
+    if(!isInt(r.bt)||+r.bt<1)errs.push(tag+': CPU burst must be a positive integer (got "'+r.bt+'").');
+    procs.push({id,at:+r.at,bt:+r.bt});
+  });
+  if(algo==='RR'&&(!isInt(q)||+q<1))errs.push('Time quantum must be a positive integer (got "'+q+'").');
+  return{errs,procs};
+}
+const cmpKey=k=>(a,b)=>{const x=k(a),y=k(b);for(let j=0;j<x.length;j++)if(x[j]!==y[j])return x[j]-y[j];return a-b;};
+// Returns segments {pid|null(idle), start, end}. RR slices are never merged so quantum boundaries stay visible.
+function schedule(P,algo,q){
+  const n=P.length,rem=P.map(p=>p.bt),segs=[];let t=0,done=0;
+  const push=(pid,s,e)=>{const l=segs[segs.length-1];
+    if(algo!=='RR'&&l&&l.pid===pid&&l.end===s)l.end=e;else segs.push({pid,start:s,end:e});};
+  if(algo==='RR'){
+    const ord=P.map((_,i)=>i).sort((a,b)=>P[a].at-P[b].at||a-b);let ni=0;const Q=[];
+    const admit=T=>{while(ni<n&&P[ord[ni]].at<=T)Q.push(ord[ni++]);};
+    while(done<n){
+      admit(t);
+      if(!Q.length){const na=P[ord[ni]].at;push(null,t,na);t=na;continue;}
+      const i=Q.shift(),run=Math.min(q,rem[i]);
+      push(P[i].id,t,t+run);t+=run;rem[i]-=run;
+      admit(t);                       // arrivals at the boundary join first...
+      if(rem[i]>0)Q.push(i);else done++; // ...then the unfinished process rejoins
+    }
+    return segs;
+  }
+  const key={FCFS:i=>[P[i].at],SJF:i=>[P[i].bt,P[i].at],SRTF:i=>[rem[i],P[i].at]}[algo];
+  const cmp=cmpKey(key);let cur=-1;     // ties: key, then earlier arrival, then input position
+  while(done<n){
+    const ready=[];let na=Infinity;
+    for(let i=0;i<n;i++){if(rem[i]<=0)continue;if(P[i].at<=t)ready.push(i);else na=Math.min(na,P[i].at);}
+    if(!ready.length){push(null,t,na);t=na;continue;}
+    const best=ready.sort(cmp)[0];
+    if(algo==='SRTF'){if(cur<0||rem[cur]<=0||rem[best]<rem[cur])cur=best;} // preempt only if strictly shorter
+    else if(cur<0)cur=best;
+    const dur=algo==='SRTF'?Math.min(rem[cur],na-t):rem[cur];
+    push(P[cur].id,t,t+dur);t+=dur;rem[cur]-=dur;
+    if(rem[cur]===0){done++;cur=-1;}
+  }
+  return segs;
+}
+function analyze(P,segs){
+  const rows=P.map(p=>{const s=segs.filter(x=>x.pid===p.id),start=s[0].start,comp=s[s.length-1].end,tat=comp-p.at;
+    return{id:p.id,at:p.at,bt:p.bt,start,comp,tat,wt:tat-p.bt,rt:start-p.at};});
+  const av=k=>rows.reduce((a,r)=>a+r[k],0)/rows.length;
+  return{rows,avg:{tat:av('tat'),wt:av('wt'),rt:av('rt')}};
+}
+function checks(P,segs,res){
+  const run=id=>segs.filter(s=>s.pid===id).reduce((a,s)=>a+s.end-s.start,0),comp=id=>res.rows.find(r=>r.id===id).comp;
+  return[
+   {name:'Every process receives exactly its CPU burst',ok:P.every(p=>run(p.id)===p.bt)},
+   {name:'No process runs before its arrival',ok:P.every(p=>segs.every(s=>s.pid!==p.id||s.start>=p.at))},
+   {name:'No overlap on the single CPU (timeline contiguous from 0)',ok:segs[0].start===0&&segs.every((s,i)=>s.end>s.start&&(i===0||s.start===segs[i-1].end))},
+   {name:'Waiting and response times are nonnegative',ok:res.rows.every(r=>r.wt>=0&&r.rt>=0)},
+   {name:'CPU is never idle while a process is ready',ok:segs.every(s=>s.pid!==null||P.every(p=>!(p.at<s.end&&comp(p.id)>s.start)))}];
+}
+//ENGINE-END
+
+const EX={
+ A:[['P1',0,8],['P2',1,4],['P3',2,2],['P4',4,1]],
+ B:[['P1',2,3],['P2',2,1],['P3',8,2],['P4',9,1]],
+ C:[['P1',3,2],['P2',6,1],['P3',7,2]],
+ D:[['P1',0,4],['P2',2,2],['P3',1,2],['P4',1,2]],
+ E:[['P1',0,7],['P2',2,4],['P3',4,1],['P4',5,4]]};
+let rows=[];const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function draw(){$('tb').innerHTML=rows.map((r,i)=>'<tr>'+['id','at','bt'].map(k=>`<td><input data-i="${i}" data-k="${k}" value="${esc(r[k])}"></td>`).join('')+`<td><button data-del="${i}">Remove</button></td></tr>`).join('');}
+$('tb').addEventListener('input',e=>{const d=e.target.dataset;if(d.k)rows[d.i][d.k]=e.target.value;});
+$('tb').addEventListener('click',e=>{if(e.target.dataset.del!==undefined){rows.splice(+e.target.dataset.del,1);draw();}});
+$('add').onclick=()=>{let k=1;while(rows.some(r=>r.id.trim()==='P'+k))k++;rows.push({id:'P'+k,at:'0',bt:'1'});draw();};
+$('load').onclick=()=>{rows=EX[$('ex').value].map(([id,at,bt])=>({id,at:String(at),bt:String(bt)}));draw();};
+$('algo').onchange=()=>{$('ql').style.display=$('algo').value==='RR'?'':'none';};
+const col=i=>`hsl(${(i*67+20)%360},65%,72%)`,U=40;
+$('run').onclick=()=>{
+  const algo=$('algo').value,{errs,procs}=validate(rows,algo,$('q').value);
+  if(errs.length){$('err').style.display='block';$('err').innerHTML='<b>Invalid input — nothing was simulated:</b><ul>'+errs.map(e=>'<li>'+esc(e)+'</li>').join('')+'</ul>';$('out').style.display='none';return;}
+  $('err').style.display='none';$('out').style.display='block';
+  const segs=schedule(procs,algo,+$('q').value),res=analyze(procs,segs),idx=id=>procs.findIndex(p=>p.id===id);
+  $('gt').textContent='— '+ALGOS[algo]+(algo==='RR'?', q='+(+$('q').value):'');
+  $('gantt').innerHTML=segs.map((s,i)=>`<div class="blk ${s.pid===null?'idle':''}" style="width:${(s.end-s.start)*U}px;${s.pid!==null?'background:'+col(idx(s.pid)):''}"><b>${s.pid===null?'IDLE':esc(s.pid)}</b><i class="t" style="left:0">${s.start}</i>${i===segs.length-1?`<i class="t" style="right:0;transform:translateX(50%)">${s.end}</i>`:''}</div>`).join('');
+  $('slices').innerHTML='Timeline: '+segs.map(s=>`${s.pid===null?'IDLE':esc(s.pid)} [${s.start},${s.end})`).join(', ');
+  const f=x=>(+x.toFixed(2)).toString();
+  $('res').innerHTML='<tr><th>Process</th><th>Arrival</th><th>CPU burst</th><th>First start</th><th>Completion</th><th>Turnaround</th><th>Waiting</th><th>Response</th></tr>'+res.rows.map(r=>`<tr><td>${esc(r.id)}</td><td>${r.at}</td><td>${r.bt}</td><td>${r.start}</td><td>${r.comp}</td><td>${r.tat}</td><td>${r.wt}</td><td>${r.rt}</td></tr>`).join('');
+  $('avg').innerHTML=`<b>Average turnaround:</b> ${f(res.avg.tat)} &nbsp; <b>Average waiting:</b> ${f(res.avg.wt)} &nbsp; <b>Average response:</b> ${f(res.avg.rt)}`;
+  $('chk').innerHTML=checks(procs,segs,res).map(c=>`<div class="${c.ok?'ok':'bad'}">${c.ok?'✓':'✗'} ${c.name}</div>`).join('');
+};
+$('load').click();$('algo').onchange();
+</script></body></html>
