@@ -2,7 +2,8 @@
 
 A single-page, no-dependency web app that simulates classic CPU scheduling algorithms on one CPU and shows the result as a Gantt chart with per-process and average metrics.
 
-**Live demo:** [LINK TO CLIENT SIDE DEMO](https://kaan-kalaycioglu.github.io/simple-cpu-scheduler/index.html)
+**Cloudflare Pages Live Demo:** [LINK TO CLIENT SIDE DEMO](simple-cpu-scheduler.kaan-kalaycioglu03.workers.dev)
+**Github Pages Live Demo:** [LINK TO CLIENT SIDE DEMO](https://kaan-kalaycioglu.github.io/simple-cpu-scheduler/index.html)
 
 ## Features
 
